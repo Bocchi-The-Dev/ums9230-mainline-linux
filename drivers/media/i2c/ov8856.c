@@ -1422,6 +1422,7 @@ struct ov8856 {
 	struct v4l2_ctrl_handler ctrl_handler;
 
 	struct clk		*xvclk;
+	struct gpio_desc	*powerdown_gpio;
 	struct gpio_desc	*reset_gpio;
 	struct regulator_bulk_data supplies[ARRAY_SIZE(ov8856_supply_names)];
 
@@ -1690,14 +1691,25 @@ static int ov8856_write_reg_list(struct ov8856 *ov8856,
 
 static int ov8856_identify_module(struct ov8856 *ov8856)
 {
-	int ret;
+	int ret, i;
 	u32 val;
 
 	if (ov8856->identified)
 		return 0;
 
-	ret = ov8856_read_reg(ov8856, OV8856_REG_CHIP_ID,
-			      OV8856_REG_VALUE_24BIT, &val);
+	for (i = 0; i < 5; i++) {
+		ret = ov8856_read_reg(ov8856, OV8856_REG_CHIP_ID,
+				      OV8856_REG_VALUE_24BIT, &val);
+		if (!ret) {
+			dev_info(ov8856->dev, "chip id read %d: 0x%x\n", i, val);
+			if (val == OV8856_CHIP_ID)
+				break;
+		} else {
+			dev_info(ov8856->dev, "chip id read %d failed: %d\n", i, ret);
+		}
+		msleep(20);
+	}
+
 	if (ret)
 		return ret;
 
@@ -2105,13 +2117,18 @@ static int ov8856_power_on(struct device *dev)
 		goto disable_clk;
 	}
 
+	if (ov8856->powerdown_gpio)
+		gpiod_set_value_cansleep(ov8856->powerdown_gpio, 0);
+
 	gpiod_set_value_cansleep(ov8856->reset_gpio, 0);
-	usleep_range(1500, 1800);
+	usleep_range(5000, 6000);
 
 	return 0;
 
 disable_clk:
 	gpiod_set_value_cansleep(ov8856->reset_gpio, 1);
+	if (ov8856->powerdown_gpio)
+		gpiod_set_value_cansleep(ov8856->powerdown_gpio, 1);
 	clk_disable_unprepare(ov8856->xvclk);
 
 	return ret;
@@ -2126,6 +2143,8 @@ static int ov8856_power_off(struct device *dev)
 		return 0;
 
 	gpiod_set_value_cansleep(ov8856->reset_gpio, 1);
+	if (ov8856->powerdown_gpio)
+		gpiod_set_value_cansleep(ov8856->powerdown_gpio, 1);
 	regulator_bulk_disable(ARRAY_SIZE(ov8856_supply_names),
 			       ov8856->supplies);
 	clk_disable_unprepare(ov8856->xvclk);
@@ -2303,9 +2322,14 @@ static int ov8856_get_hwcfg(struct ov8856 *ov8856)
 
 	if (!is_acpi_node(fwnode)) {
 		ov8856->reset_gpio = devm_gpiod_get_optional(dev, "reset",
-							     GPIOD_OUT_LOW);
+							     GPIOD_OUT_HIGH);
 		if (IS_ERR(ov8856->reset_gpio))
 			return PTR_ERR(ov8856->reset_gpio);
+
+		ov8856->powerdown_gpio = devm_gpiod_get_optional(dev, "powerdown",
+								 GPIOD_OUT_HIGH);
+		if (IS_ERR(ov8856->powerdown_gpio))
+			return PTR_ERR(ov8856->powerdown_gpio);
 
 		for (i = 0; i < ARRAY_SIZE(ov8856_supply_names); i++)
 			ov8856->supplies[i].supply = ov8856_supply_names[i];

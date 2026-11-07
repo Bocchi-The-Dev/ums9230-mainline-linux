@@ -297,13 +297,16 @@ static int sprd_isp_probe(struct platform_device *pdev)
 		return PTR_ERR(isp->base);
 
 	for (i = 0; i < SPRD_ISP_NUM_IRQS; i++) {
-		char name[32];
+		char *name;
 
 		isp->irq[i] = platform_get_irq(pdev, i);
 		if (isp->irq[i] <= 0)
 			return -EINVAL;
 
-		snprintf(name, sizeof(name), "sprd-isp-ch%d", i);
+		/* request_irq() keeps the pointer: the name must outlive probe() */
+		name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "sprd-isp-ch%d", i);
+		if (!name)
+			return -ENOMEM;
 
 		ret = devm_request_irq(&pdev->dev, isp->irq[i],
 				       isp->hw->handle_irq,

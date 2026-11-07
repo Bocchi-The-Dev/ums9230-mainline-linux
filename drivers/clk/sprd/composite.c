@@ -6,6 +6,7 @@
 // Author: Chunyan Zhang <chunyan.zhang@spreadtrum.com>
 
 #include <linux/clk-provider.h>
+#include <linux/limits.h>
 
 #include "composite.h"
 
@@ -13,8 +14,43 @@ static int sprd_comp_determine_rate(struct clk_hw *hw,
 				    struct clk_rate_request *req)
 {
 	struct sprd_comp *cc = hw_to_sprd_comp(hw);
+	struct clk_rate_request best = { };
+	unsigned long best_diff = ULONG_MAX;
+	unsigned int i, n = clk_hw_get_num_parents(hw);
+	bool found = false;
 
-	return divider_determine_rate(hw, req, NULL, cc->div.width, 0);
+	/*
+	 * The mux and the divider live in one register, so every parent has to
+	 * be considered: divider_determine_rate() alone only divides the
+	 * current parent and could never move the mux.
+	 */
+	for (i = 0; i < n; i++) {
+		struct clk_rate_request tmp = *req;
+		struct clk_hw *parent = clk_hw_get_parent_by_index(hw, i);
+		unsigned long diff;
+
+		if (!parent)
+			continue;
+
+		tmp.best_parent_hw = parent;
+		tmp.best_parent_rate = clk_hw_get_rate(parent);
+		if (divider_determine_rate(hw, &tmp, NULL, cc->div.width, 0))
+			continue;
+
+		diff = tmp.rate > req->rate ? tmp.rate - req->rate :
+					      req->rate - tmp.rate;
+		if (!found || diff < best_diff) {
+			best = tmp;
+			best_diff = diff;
+			found = true;
+		}
+	}
+
+	if (!found)
+		return -EINVAL;
+
+	*req = best;
+	return 0;
 }
 
 static unsigned long sprd_comp_recalc_rate(struct clk_hw *hw,

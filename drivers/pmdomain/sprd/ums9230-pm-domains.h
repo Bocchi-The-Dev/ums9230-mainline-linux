@@ -17,6 +17,11 @@ static const struct sprd_pmu_domain_data sprd_pmu_domain_data_ums9230[] = {
 		.caps = SPRD_PD_SHUTDOWN,
 		.pd_cfg_offs = 0x02e8,
 	},
+	[UMS9230_POWER_DOMAIN_AP_VSP] = {
+		.name = "ap_vsp",
+		.caps = SPRD_PD_SHUTDOWN,
+		.pd_cfg_offs = 0x0314,
+	},
 	[UMS9230_POWER_DOMAIN_PUBCP] = {
 		.name = "pubcp",
 		.caps = SPRD_PD_SHUTDOWN | SPRD_PD_ACTIVE_WAKEUP,

@@ -27,6 +27,9 @@
 #include <linux/i2c.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
+#include <linux/of.h>
+#include <linux/regulator/driver.h>
+#include <linux/regulator/machine.h>
 
 #include <linux/power/bq2415x_charger.h>
 
@@ -788,6 +791,14 @@ static bool bq2415x_update_reported_mode(struct bq2415x_device *bq, int mA)
 {
 	enum bq2415x_mode mode;
 
+	/*
+	 * POWER_SUPPLY_PROP_CURRENT_MAX is in microamps, but this notifier was
+	 * written for suppliers that report milliamps. No real mA value is
+	 * above a few thousand, so anything from 10000 up is microamps.
+	 */
+	if (mA >= 10000)
+		mA /= 1000;
+
 	if (mA == 0)
 		mode = BQ2415X_MODE_OFF;
 	else if (mA < 500)
@@ -827,6 +838,14 @@ static int bq2415x_notifier_call(struct notifier_block *nb,
 	}
 
 	dev_dbg(bq->dev, "notifier call was called\n");
+
+	/*
+	 * When OTG boost mode is active, the 5 V sourced onto VBUS can trigger
+	 * our own extcon/charger detector. Ignore charger notifications while
+	 * boosting so reported_mode is not overwritten by self-feedback.
+	 */
+	if (bq->mode == BQ2415X_MODE_BOOST)
+		return NOTIFY_OK;
 
 	ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_CURRENT_MAX,
 			&prop);
@@ -1276,13 +1295,13 @@ static ssize_t bq2415x_sysfs_set_registers(struct device *dev,
 /* print value of chip register, format: 'register=value' */
 static ssize_t bq2415x_sysfs_print_reg(struct bq2415x_device *bq,
 				       u8 reg,
-				       char *buf)
+				       char *buf, int at)
 {
 	int ret = bq2415x_i2c_read(bq, reg);
 
 	if (ret < 0)
-		return sysfs_emit(buf, "%#.2x=error %d\n", reg, ret);
-	return sysfs_emit(buf, "%#.2x=%#.2x\n", reg, ret);
+		return sysfs_emit_at(buf, at, "%#.2x=error %d\n", reg, ret);
+	return sysfs_emit_at(buf, at, "%#.2x=%#.2x\n", reg, ret);
 }
 
 /* show all raw values of chip register, format per line: 'register=value' */
@@ -1294,11 +1313,11 @@ static ssize_t bq2415x_sysfs_show_registers(struct device *dev,
 	struct bq2415x_device *bq = power_supply_get_drvdata(psy);
 	ssize_t ret = 0;
 
-	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_STATUS, buf+ret);
-	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_CONTROL, buf+ret);
-	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_VOLTAGE, buf+ret);
-	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_VENDER, buf+ret);
-	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_CURRENT, buf+ret);
+	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_STATUS, buf, ret);
+	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_CONTROL, buf, ret);
+	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_VOLTAGE, buf, ret);
+	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_VENDER, buf, ret);
+	ret += bq2415x_sysfs_print_reg(bq, BQ2415X_REG_CURRENT, buf, ret);
 	return ret;
 }
 
@@ -1540,6 +1559,97 @@ static int bq2415x_power_supply_init(struct bq2415x_device *bq)
 }
 
 /* main bq2415x probe function */
+/**** OTG boost regulator ****/
+
+/*
+ * The charger's boost converter is what supplies VBUS when the port is a USB
+ * host (an OTG adapter or a partner that asks for power). Expose it as a
+ * regulator so the Type-C port manager can turn it on and off through
+ * vbus-supply, instead of leaving the data role switched to host with no
+ * power on the port.
+ */
+static int bq2415x_otg_enable(struct regulator_dev *rdev)
+{
+	struct bq2415x_device *bq = rdev_get_drvdata(rdev);
+
+	/* boost and charging are mutually exclusive */
+	if (bq->automode >= 0)
+		bq->automode = 0;
+
+	bq2415x_set_autotimer(bq, 1);
+
+	return bq2415x_set_mode(bq, BQ2415X_MODE_BOOST);
+}
+
+static int bq2415x_otg_disable(struct regulator_dev *rdev)
+{
+	struct bq2415x_device *bq = rdev_get_drvdata(rdev);
+	enum bq2415x_mode mode = BQ2415X_MODE_OFF;
+
+	if (bq->automode >= 0) {
+		bq->automode = 1;
+		mode = bq->reported_mode;
+	}
+
+	return bq2415x_set_mode(bq, mode);
+}
+
+static int bq2415x_otg_is_enabled(struct regulator_dev *rdev)
+{
+	struct bq2415x_device *bq = rdev_get_drvdata(rdev);
+
+	return bq->mode == BQ2415X_MODE_BOOST;
+}
+
+static const struct regulator_ops bq2415x_otg_ops = {
+	.enable = bq2415x_otg_enable,
+	.disable = bq2415x_otg_disable,
+	.is_enabled = bq2415x_otg_is_enabled,
+};
+
+static const struct regulator_desc bq2415x_otg_desc = {
+	.name = "bq2415x-otg",
+	.type = REGULATOR_VOLTAGE,
+	.owner = THIS_MODULE,
+	.ops = &bq2415x_otg_ops,
+	.enable_time = 550000,
+};
+
+static const struct regulator_init_data bq2415x_otg_init_data = {
+	.constraints = {
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static int bq2415x_otg_regulator_init(struct bq2415x_device *bq,
+				      struct device_node *np)
+{
+	struct device_node *otg_np;
+	struct regulator_config config = {
+		.dev = bq->dev,
+		.driver_data = bq,
+	};
+	struct regulator_dev *rdev;
+
+	otg_np = of_get_child_by_name(np, "otg-vbus");
+	if (!otg_np)
+		return 0;
+
+	/*
+	 * The descriptor has no of_match, so the regulator core never reads the
+	 * constraints from the DT node and the regulator would have none: without
+	 * REGULATOR_CHANGE_STATUS every regulator_enable() fails with -EPERM
+	 * (silently), which left VBUS off and the Type-C port in an attach/detach
+	 * loop. Give it the one operation it needs here.
+	 */
+	config.init_data = &bq2415x_otg_init_data;
+	config.of_node = otg_np;
+	rdev = devm_regulator_register(bq->dev, &bq2415x_otg_desc, &config);
+	of_node_put(otg_np);
+
+	return PTR_ERR_OR_ZERO(rdev);
+}
+
 static int bq2415x_probe(struct i2c_client *client)
 {
 	const struct i2c_device_id *id = i2c_client_get_device_id(client);
@@ -1654,6 +1764,15 @@ static int bq2415x_probe(struct i2c_client *client)
 	if (ret) {
 		dev_err(bq->dev, "failed to set default values: %d\n", ret);
 		goto error_3;
+	}
+
+	if (np) {
+		ret = bq2415x_otg_regulator_init(bq, np);
+		if (ret) {
+			dev_err(bq->dev, "failed to register OTG regulator: %d\n",
+				ret);
+			goto error_3;
+		}
 	}
 
 	if (bq->notify_node || bq->init_data.notify_device) {

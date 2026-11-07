@@ -31,7 +31,16 @@ properties:
       Reference to a gate clock phandle, since access to some of IOMMUs are
       controlled by gate clock, but this is not required.
 
+  resets:
+    description:
+      Resets of the block the IOMMU is part of, released before the IOMMU is
+      used. They may be shared with the IOMMU's client.
+
+  power-domains:
+    maxItems: 1
+
   sprd,iova-range:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
     minItems: 2
     maxItems: 2
     description:

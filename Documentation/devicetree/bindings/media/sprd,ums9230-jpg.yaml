@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/sprd,ums9230-jpg.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Unisoc UMS9230 JPEG codec
+
+maintainers:
+  - Seuj09 <jeus110310@gmail.com>
+
+description:
+  The JPEG codec block of the Unisoc UMS9230 and related SoCs. It is part of
+  the multimedia subsystem and shares its power domain.
+
+properties:
+  compatible:
+    const: sprd,ums9230-jpg
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: Multimedia clock generator gate
+      - description: Clock gate of the codec
+      - description: Codec clock (mux of the 76.8, 128, 256 and 384 MHz TWPLL outputs)
+
+  resets:
+    items:
+      - description: Soft reset of the codec
+
+  power-domains:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - resets
+  - power-domains
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/sprd,ums9230-clk.h>
+    #include <dt-bindings/reset/sprd,ums9230-reset.h>
+    #include <dt-bindings/power/sprd,ums9230-power.h>
+
+    jpeg-codec@36000000 {
+        compatible = "sprd,ums9230-jpg";
+        reg = <0x36000000 0xc000>;
+        interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&mm_gate CLK_MM_CKG_EB>, <&mm_gate CLK_MM_JPG_EB>,
+                 <&mm_clk CLK_JPG>;
+        resets = <&mm_gate RESET_MM_AHB_JPG_SOFT_RST_MASK>;
+        power-domains = <&pmu UMS9230_POWER_DOMAIN_MM>;
+    };

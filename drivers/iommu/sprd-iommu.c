@@ -16,7 +16,9 @@
 #include <linux/of_iommu.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/reset.h>
 #include <linux/slab.h>
 
 #define SPRD_IOMMU_PAGE_SHIFT	12
@@ -62,6 +64,7 @@ enum sprd_iommu_version {
  * @iommu: IOMMU core representation
  * @group: IOMMU group
  * @eb: gate clock which controls IOMMU access
+ * @rst: optional (shared) reset of the block the IOMMU is part of
  */
 struct sprd_iommu_device {
 	struct sprd_iommu_domain	*dom;
@@ -74,6 +77,7 @@ struct sprd_iommu_device {
 	struct device		*dev;
 	struct iommu_device	iommu;
 	struct clk		*eb;
+	struct reset_control	*rst;
 };
 
 struct sprd_iommu_domain {
@@ -529,14 +533,40 @@ static int sprd_iommu_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, sdev);
 	sdev->dev = dev;
 
-	ret = sprd_iommu_clk_enable(sdev);
+	/*
+	 * Some IOMMUs sit in a power domain and in a block that has to be
+	 * released from reset before their registers read back correctly (a
+	 * block still in reset reads as version 0, which would be taken for the
+	 * other register layout). Keep the domain powered while the IOMMU is
+	 * bound: its page table registers are accessed whenever a client maps
+	 * memory.
+	 */
+	ret = devm_pm_runtime_enable(dev);
 	if (ret)
 		goto free_page;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		goto free_page;
+
+	ret = sprd_iommu_clk_enable(sdev);
+	if (ret)
+		goto put_pm;
+
+	sdev->rst = devm_reset_control_array_get_optional_shared(dev);
+	if (IS_ERR(sdev->rst)) {
+		ret = dev_err_probe(dev, PTR_ERR(sdev->rst), "failed to get the resets\n");
+		goto disable_clk;
+	}
+
+	ret = reset_control_deassert(sdev->rst);
+	if (ret)
+		goto disable_clk;
 
 	ret = sprd_iommu_get_version(sdev);
 	if (ret < 0) {
 		dev_err(dev, "IOMMU version(%d) is invalid.\n", ret);
-		goto disable_clk;
+		goto assert_rst;
 	}
 	sdev->ver = ret;
 
@@ -552,8 +582,12 @@ static int sprd_iommu_probe(struct platform_device *pdev)
 
 remove_sysfs:
 	iommu_device_sysfs_remove(&sdev->iommu);
+assert_rst:
+	reset_control_assert(sdev->rst);
 disable_clk:
 	sprd_iommu_clk_disable(sdev);
+put_pm:
+	pm_runtime_put(dev);
 free_page:
 	dma_free_coherent(sdev->dev, SPRD_IOMMU_PAGE_SIZE, sdev->prot_page_va, sdev->prot_page_pa);
 	return ret;
@@ -568,6 +602,9 @@ static void sprd_iommu_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 	iommu_device_unregister(&sdev->iommu);
 	iommu_device_sysfs_remove(&sdev->iommu);
+	reset_control_assert(sdev->rst);
+	sprd_iommu_clk_disable(sdev);
+	pm_runtime_put(&pdev->dev);
 }
 
 static struct platform_driver sprd_iommu_driver = {

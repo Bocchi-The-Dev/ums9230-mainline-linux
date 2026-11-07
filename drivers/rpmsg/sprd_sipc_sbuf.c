@@ -293,25 +293,30 @@ __sipc_sbuf_create_ept(struct sipc_sbuf *sbuf, struct rpmsg_device *rpdev,
 		       rpmsg_rx_cb_t cb, void *priv,
 		       struct rpmsg_channel_info *chinfo)
 {
-	struct rpmsg_driver *rpdrv = to_rpmsg_driver(rpdev->dev.driver);
+	struct rpmsg_driver *rpdrv = rpdev->dev.driver ?
+		to_rpmsg_driver(rpdev->dev.driver) : NULL;
 	struct sipc_sbuf_device *sdev = NULL, *sd;
 	struct rpmsg_endpoint *ept;
 	unsigned long flags;
 	int id;
 
-	rcu_read_lock();
-	for (id = 0; id < sbuf->num_buffers; id++) {
-		sd = rcu_dereference(sbuf->buffers[id].sdev);
-		if (!sd)
-			continue;
+	if (rpdev && rpdev != &sbuf->ctrldev) {
+		sdev = rpdev_to_sbuf_device(rpdev);
+	} else {
+		rcu_read_lock();
+		for (id = 0; id < sbuf->num_buffers; id++) {
+			sd = rcu_dereference(sbuf->buffers[id].sdev);
+			if (!sd)
+				continue;
 
-		if (chinfo->dst == sd->rpdev.dst || chinfo->src == sd->rpdev.src ||
-		    !strncmp(chinfo->name, sd->rpdev.id.name, RPMSG_NAME_SIZE)) {
-			sdev = sd;
-			break;
+			if (chinfo->dst == sd->rpdev.dst || chinfo->src == sd->rpdev.src ||
+			    !strncmp(chinfo->name, sd->rpdev.id.name, RPMSG_NAME_SIZE)) {
+				sdev = sd;
+				break;
+			}
 		}
+		rcu_read_unlock();
 	}
-	rcu_read_unlock();
 
 	if (!sdev) {
 		dev_err(&sbuf->dev, "channel %d/%d/%s not found\n",
@@ -354,7 +359,7 @@ __sipc_sbuf_create_ept(struct sipc_sbuf *sbuf, struct rpmsg_device *rpdev,
 	 * driver provides a default callback. If not, receive all buffered
 	 * data on the endpoint as soon as it is created.
 	 */
-	if (rpdev != &sdev->rpdev || !rpdrv->callback) {
+	if (rpdev != &sdev->rpdev || !rpdrv || !rpdrv->callback) {
 		while (sipc_sbuf_try_rx(sdev->sbuf, sdev, chinfo->src))
 			;
 	}
@@ -565,13 +570,6 @@ static int sipc_sbuf_open(struct sipc_channel *channel)
 		rpdev->dev.parent = &sbuf->dev;
 		rpdev->dev.release = sipc_sbuf_rpdev_release;
 
-		ret = rpmsg_register_device(rpdev);
-		if (ret) {
-			dev_err(&sbuf->dev, "failed to register %d/%d\n", rx_id, tx_id);
-			/* rpmsg_register_device calls put_device on error */
-			continue;
-		}
-
 		spin_lock_irqsave(&sbuf->buffer_sdev_lock, flags);
 		if (rcu_access_pointer(sbuf->buffers[rx_id].sdev))
 			ret = -EEXIST;
@@ -580,8 +578,18 @@ static int sipc_sbuf_open(struct sipc_channel *channel)
 		spin_unlock_irqrestore(&sbuf->buffer_sdev_lock, flags);
 
 		if (ret < 0) {
-			device_unregister(&rpdev->dev);
+			kfree(sdev);
 			goto unregister;
+		}
+
+		ret = rpmsg_register_device(rpdev);
+		if (ret) {
+			dev_err(&sbuf->dev, "failed to register %d/%d\n", rx_id, tx_id);
+			spin_lock_irqsave(&sbuf->buffer_sdev_lock, flags);
+			rcu_assign_pointer(sbuf->buffers[rx_id].sdev, NULL);
+			spin_unlock_irqrestore(&sbuf->buffer_sdev_lock, flags);
+			/* rpmsg_register_device calls put_device on error */
+			continue;
 		}
 	}
 

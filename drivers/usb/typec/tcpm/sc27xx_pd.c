@@ -456,15 +456,23 @@ static int sc27xx_pd_set_vbus(struct tcpc_dev *tcpc, bool on, bool charge)
 	if (!pd->vbus || pd->vbus_on == on)
 		goto out;
 
-	pd->vbus_on = on;
-
 	if (on)
 		ret = regulator_enable(pd->vbus);
 	else
 		ret = regulator_disable(pd->vbus);
 
-	if (ret < 0)
+	if (ret < 0) {
+		/*
+		 * Only record the new state once the regulator really changed:
+		 * otherwise a failed enable leaves vbus_on set and the next
+		 * detach disables a regulator that was never enabled.
+		 */
+		dev_err(pd->dev, "failed to %s vbus: %d\n",
+			on ? "enable" : "disable", ret);
 		goto out;
+	}
+
+	pd->vbus_on = on;
 
 	/* no VBUS interrupts are sent, so polling is needed */
 	if (!pd->detect_pending) {
@@ -1357,7 +1365,8 @@ static int sc27xx_get_vbus_status(struct sc27xx_pd *pd)
 	bool vbus_present;
 	int ret;
 
-	if (pd->typec_online) {
+	if (pd->typec_online &&
+	    !(pd->state == SC27XX_ATTACHED_SRC && !pd->vbus_on)) {
 		ret = regmap_read_poll_timeout(pd->regmap,
 					       pd->typec_base + SC27XX_TYPEC_DBG1,
 					       status,
@@ -1365,10 +1374,6 @@ static int sc27xx_get_vbus_status(struct sc27xx_pd *pd)
 					       SC27XX_VBUS_OK_POLL_INTERVAL,
 					       SC27XX_VBUS_OK_TIMEOUT);
 		if (ret < 0) {
-			/* vbus may be off when entering source state */
-			if (pd->state == SC27XX_ATTACHED_SRC && !pd->vbus_on)
-				return 0;
-
 			dev_err(pd->dev, "wait for vbus failed, ret = %d\n", ret);
 			return ret;
 		}

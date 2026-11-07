@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/sprd,ums9230-vsp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Unisoc UMS9230 video codec (VSP)
+
+maintainers:
+  - Seuj09 <jeus110310@gmail.com>
+
+description:
+  The video codec block (VSP) of the Unisoc UMS9230 and related SoCs. It sits
+  in its own power domain behind the multimedia subsystem, is clocked from a
+  gate and a mux that selects one of three TWPLL outputs, and is reset by two
+  bits in the AP AHB register block.
+
+properties:
+  compatible:
+    const: sprd,ums9230-vsp
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: Clock gate of the codec
+      - description: Codec clock (mux of the 256, 307.2 and 384 MHz TWPLL outputs)
+
+  clock-names:
+    items:
+      - const: enable
+      - const: codec
+
+  resets:
+    items:
+      - description: Global soft reset of the VSP
+      - description: Soft reset of the codec core
+
+  reset-names:
+    items:
+      - const: global
+      - const: core
+
+  power-domains:
+    items:
+      - description: Multimedia subsystem domain
+      - description: VSP domain
+
+  power-domain-names:
+    items:
+      - const: mm
+      - const: vsp
+
+  iommus:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - resets
+  - reset-names
+  - power-domains
+  - power-domain-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/sprd,ums9230-clk.h>
+    #include <dt-bindings/reset/sprd,ums9230-reset.h>
+    #include <dt-bindings/power/sprd,ums9230-power.h>
+
+    video-codec@32000000 {
+        compatible = "sprd,ums9230-vsp";
+        reg = <0x32000000 0xc000>;
+        interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&apahb_gate CLK_VSP_EB>, <&ap_clk CLK_VSP>;
+        clock-names = "enable", "codec";
+        resets = <&apahb_gate RESET_AP_AHB_VSP_GLOBAL_SOFT_RST>,
+                 <&apahb_gate RESET_AP_AHB_VSP_SOFT_RST>;
+        reset-names = "global", "core";
+        power-domains = <&pmu UMS9230_POWER_DOMAIN_MM>,
+                        <&pmu UMS9230_POWER_DOMAIN_AP_VSP>;
+        power-domain-names = "mm", "vsp";
+        iommus = <&iommu_vsp>;
+    };

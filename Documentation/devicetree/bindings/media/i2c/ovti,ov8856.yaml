@@ -60,6 +60,14 @@ properties:
       This corresponds to the hardware pin XSHUTDOWN which is physically
       active low.
 
+  powerdown-gpios:
+    description:
+      The phandle and specifier for an optional GPIO that controls the
+      sensor's power-down (standby) pin. The pin is active high, so driving it
+      high puts the sensor in standby, and it is driven low once the supplies
+      and the external clock are stable.
+    maxItems: 1
+
   orientation: true
   rotation: true
 

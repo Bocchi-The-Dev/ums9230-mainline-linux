@@ -1,0 +1,138 @@
+name: Build kernel (Infinix X6525)
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: arm64 Image + ums9230-infinix-x6525.dtb
+    runs-on: namespace-profile-1
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out the tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 && command -v bc >/dev/null 2>&1; then
+            echo "cross toolchain already installed"
+          elif command -v apt-get >/dev/null 2>&1; then
+            SUDO=""
+            if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
+            $SUDO apt-get update
+            DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends \
+              bc bison flex build-essential libssl-dev libelf-dev \
+              gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          else
+            echo "::error::no aarch64 cross toolchain and no apt-get to install one"
+            exit 1
+          fi
+          aarch64-linux-gnu-gcc --version | head -n1
+
+      - name: Configure (defconfig + android.config + x6525.config)
+        run: |
+          set -euo pipefail
+          export ARCH=arm64
+          make -j"$(nproc)" O=out defconfig
+          scripts/kconfig/merge_config.sh -m -O out out/.config \
+            arch/arm64/configs/android.config \
+            arch/arm64/configs/x6525.config
+          make O=out olddefconfig
+
+      - name: Check the options Android needs
+        run: |
+          set -euo pipefail
+          fail=0
+          required="CONFIG_ARCH_SPRD=y
+          CONFIG_ANDROID_BINDER_IPC=y
+          CONFIG_ANDROID_BINDERFS=y
+          CONFIG_DMABUF_HEAPS=y
+          CONFIG_DMABUF_HEAPS_SYSTEM=y
+          CONFIG_DMABUF_HEAPS_CMA=y
+          CONFIG_SECURITY_SELINUX=y
+          CONFIG_PSI=y
+          CONFIG_MEMCG=y
+          CONFIG_DM_VERITY=y
+          CONFIG_EROFS_FS=y
+          CONFIG_F2FS_FS=y
+          CONFIG_FUSE_FS=y
+          CONFIG_ZRAM=y
+          CONFIG_MMC_SDHCI_SPRD=y
+          CONFIG_DRM_SPRD=y
+          CONFIG_SERIAL_SPRD=y
+          CONFIG_USB_MUSB_SPRD=y"
+          while IFS= read -r want; do
+            [ -n "$want" ] || continue
+            if grep -qxF -- "$want" out/.config; then
+              echo "ok      $want"
+            else
+              echo "::error::$want is not set in the resolved config"
+              sym=${want%%=*}
+              grep -E -- "^${sym}=|^# ${sym} is not set" out/.config || echo "        (the symbol did not resolve at all)"
+              fail=1
+            fi
+          done <<< "$required"
+          exit "$fail"
+
+      - name: Report fragment options that resolved off
+        if: always()
+        run: |
+          for frag in arch/arm64/configs/android.config arch/arm64/configs/x6525.config; do
+            while IFS= read -r line; do
+              case "$line" in
+                CONFIG_*) ;;
+                *) continue ;;
+              esac
+              if ! grep -qxF -- "$line" out/.config; then
+                echo "::warning file=$frag::$line did not resolve (no driver in this tree yet, or an unmet dependency)"
+              fi
+            done < "$frag"
+          done
+
+      - name: Build Image, DTBs and modules
+        run: |
+          set -euo pipefail
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          make -j"$(nproc)" O=out Image dtbs modules
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          krel=$(cat out/include/config/kernel.release)
+          echo "kernel release: $krel"
+          mkdir -p artifacts
+          cp "out/arch/arm64/boot/Image" "artifacts/Image-$krel"
+          cp "out/arch/arm64/boot/dts/sprd/ums9230-infinix-x6525.dtb" \
+             "artifacts/ums9230-infinix-x6525-$krel.dtb"
+          cp out/.config "artifacts/config-$krel"
+          make O=out INSTALL_MOD_PATH="$PWD/artifacts/modroot" \
+            INSTALL_MOD_STRIP=1 modules_install
+          tar -C artifacts/modroot -czf "artifacts/modules-$krel.tar.gz" lib/modules
+          rm -rf artifacts/modroot
+          ls -l artifacts
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: x6525-kernel-${{ github.run_number }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30

@@ -48,6 +48,7 @@ struct sprd_modem {
 	phys_addr_t mem_base;
 	size_t mem_size;
 	void *bootmem;
+	const char *cp_cmdline;
 };
 
 struct sprd_modem_region_def {
@@ -98,6 +99,14 @@ static int sprd_modem_load_region(struct sprd_modem *m,
 
 	if (rdef->zero) {
 		memset(mem + (region_start - m->mem_base), 0, region_size);
+
+		/*
+		 * The stock kernel passes the modem its own part of the kernel
+		 * command line (RF board, crystal, ...) through this region.
+		 */
+		if (m->cp_cmdline && strlen(m->cp_cmdline) < region_size)
+			strscpy(mem + (region_start - m->mem_base),
+				m->cp_cmdline, region_size);
 	} else if (fw->size > region_size) {
 		if (rdef->filename)
 			release_firmware(fw);
@@ -256,6 +265,8 @@ static int sprd_modem_probe(struct platform_device *pdev)
 
 	m = rproc->priv;
 	m->dev = dev;
+
+	of_property_read_string(dev->of_node, "sprd,cp-cmdline", &m->cp_cmdline);
 
 	m->info = of_device_get_match_data(dev);
 	if (!m->info)

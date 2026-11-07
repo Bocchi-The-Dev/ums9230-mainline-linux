@@ -108,6 +108,11 @@ static int sprd_camsys_parse_ports(struct sprd_camsys *cs)
 			goto err_out;
 		}
 
+		if (!of_device_is_available(remote)) {
+			of_node_put(remote);
+			continue;
+		}
+
 		sl = v4l2_async_nf_add_fwnode(&cs->notifier,
 					      of_fwnode_handle(remote),
 					      struct sprd_camsys_sensor_link);

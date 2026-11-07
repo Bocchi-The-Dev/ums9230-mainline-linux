@@ -7,6 +7,7 @@
 
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/math64.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
@@ -153,7 +154,7 @@ static int _sprd_pll_set_rate(const struct sprd_pll *pll,
 	u32 mask, shift, width, ibias_val, index;
 	u32 regs_num = pll->regs_num, i = 0;
 	unsigned long kint, nint;
-	u64 tmp, refin, fvco = rate;
+	u64 tmp, rem, refin, fvco = rate;
 
 	cfg = kzalloc_objs(*cfg, regs_num);
 	if (!cfg)
@@ -188,7 +189,12 @@ static int _sprd_pll_set_rate(const struct sprd_pll *pll,
 	cfg[index].val |= mask;
 	cfg[index].msk |= mask;
 
-	nint = do_div(fvco, refin * CLK_PLL_1M);
+	/*
+	 * do_div() returns the remainder and leaves the quotient in its
+	 * argument, so split the VCO rate into the integer part and the
+	 * remainder explicitly.
+	 */
+	nint = div64_u64_rem(fvco, refin * CLK_PLL_1M, &rem);
 	mask = pmask(pll, PLL_NINT);
 	index = pindex(pll, PLL_NINT);
 	shift = pshift(pll, PLL_NINT);
@@ -199,8 +205,7 @@ static int _sprd_pll_set_rate(const struct sprd_pll *pll,
 	index = pindex(pll, PLL_KINT);
 	width = pwidth(pll, PLL_KINT);
 	shift = pshift(pll, PLL_KINT);
-	tmp = fvco - refin * nint * CLK_PLL_1M;
-	tmp = do_div(tmp, 10000) * ((mask >> shift) + 1);
+	tmp = div_u64(rem, 10000) * ((mask >> shift) + 1);
 	kint = DIV_ROUND_CLOSEST_ULL(tmp, refin * 100);
 	cfg[index].val |= (kint << shift) & mask;
 	cfg[index].msk |= mask;

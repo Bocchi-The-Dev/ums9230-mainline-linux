@@ -4,3 +4,4 @@ comment "Unisoc media platform drivers"
 
 source "drivers/media/platform/sprd/camsys/Kconfig"
 source "drivers/media/platform/sprd/isp/Kconfig"
+source "drivers/media/platform/sprd/vsp/Kconfig"

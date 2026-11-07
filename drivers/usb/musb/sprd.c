@@ -27,6 +27,7 @@ struct sprd_glue {
 static int sprd_otg_switch_set(struct sprd_glue *glue, enum usb_role role)
 {
 	struct musb *musb = glue->musb;
+	unsigned long flags;
 	u8 devctl;
 
 	if (role == glue->role)
@@ -42,12 +43,17 @@ static int sprd_otg_switch_set(struct sprd_glue *glue, enum usb_role role)
 		phy_power_off(glue->phy);
 		/* wait for disconnect event */
 		msleep(20);
+		if (glue->role == USB_ROLE_HOST) {
+			spin_lock_irqsave(&musb->lock, flags);
+			musb_root_disconnect(musb);
+			spin_unlock_irqrestore(&musb->lock, flags);
+		}
 	}
 
 	switch (role) {
 	case USB_ROLE_HOST:
 		musb->is_active = 1;
-		musb_set_state(musb, OTG_STATE_A_IDLE);
+		musb_set_state(musb, OTG_STATE_A_HOST);
 		MUSB_HST_MODE(musb);
 		devctl |= MUSB_DEVCTL_SESSION;
 		musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
