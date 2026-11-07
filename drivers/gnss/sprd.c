@@ -93,7 +93,7 @@ static int sprd_gnss_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 {
 	struct gnss_device *gdev = dev_get_drvdata(&rpdev->dev);
 	struct sprd_gnss_priv *priv = gnss_get_drvdata(gdev);
-	unsigned int xlen;
+	int xlen;
 	u8 *buf = data;
 
 	while (len > 0) {
