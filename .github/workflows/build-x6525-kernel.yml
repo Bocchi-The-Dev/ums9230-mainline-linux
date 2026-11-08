@@ -39,7 +39,7 @@ jobs:
             $SUDO apt-get update
             DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends \
               bc bison flex build-essential libssl-dev libelf-dev \
-              gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+              gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu cpio
           else
             echo "::error::no aarch64 cross toolchain and no apt-get to install one"
             exit 1
@@ -128,6 +128,19 @@ jobs:
           tar -C artifacts/modroot -czf "artifacts/modules-$krel.tar.gz" lib/modules
           rm -rf artifacts/modroot
           ls -l artifacts
+
+      - name: Build debug initramfs (no-UART marker)
+        run: |
+          set -euo pipefail
+          aarch64-linux-gnu-gcc -static -Os -Wall -Wextra \
+            -o artifacts/initramfs-init tools/x6525-debug-init/init.c
+          chmod 755 artifacts/initramfs-init
+          rm -rf artifacts/initramfs-root
+          mkdir -p artifacts/initramfs-root/dev artifacts/initramfs-root/proc artifacts/initramfs-root/sys
+          cp artifacts/initramfs-init artifacts/initramfs-root/init
+          ( cd artifacts/initramfs-root && find . | cpio -o -H newc --quiet | gzip -9 ) \
+            > artifacts/x6525-debug-initramfs.cpio.gz
+          ls -l artifacts/initramfs-init artifacts/x6525-debug-initramfs.cpio.gz
 
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
