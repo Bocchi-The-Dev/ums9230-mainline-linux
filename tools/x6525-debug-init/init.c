@@ -2,22 +2,20 @@
 /*
  * Minimal PID 1 for the X6525 debugging initramfs.
  *
- * There is no UART on this unit, so the only way to learn whether the mainline
- * kernel reaches userspace is to leave a trace the stock system can read back
- * afterwards. pstore/ramoops (console+record+pmsg regions at 0xfff80000, see
- * the board DTS) survives a warm reset and the stock 5.4 kernel exposes it at
- * /sys/fs/pstore, so this init writes a marker to /dev/pmsg0 and reboots.
+ * There is no UART on this unit. This init leaves three independent traces and
+ * then hands the phone back to a state the host can reach:
  *
- * The program is freestanding: raw aarch64 syscalls, no libc and no headers,
- * so a bare aarch64-linux-gnu-gcc is enough to build it.
+ *  1. paints /dev/fb0 red            -> visible if simpledrm/fbcon came up
+ *  2. writes a marker to /dev/pmsg0   -> pstore/ramoops at 0xfff80000, readable
+ *                                       from the stock boot after the reset
+ *  3. arms "bootonce-bootloader" in   -> LK enters fastboot on the next boot,
+ *     /dev/mmcblk0p3 (misc)              so no key combo or SPD dump is needed
  *
- * Build (CI does this):
- *   aarch64-linux-gnu-gcc -nostdlib -ffreestanding -fno-builtin -no-pie \
- *       -static -Os -o init init.c
- * Pack:
- *   find . | cpio -o -H newc | gzip -9 > initramfs.cpio.gz
+ * then reboots. Freestanding: raw aarch64 syscalls, no libc, no headers.
  *
- * Boot it with a repacked boot_a.img (repack.py --ramdisk ...).
+ * Build: aarch64-linux-gnu-gcc -nostdlib -ffreestanding -fno-builtin -no-pie \
+ *            -static -Os -o init init.c
+ * Pack:  find . | cpio -o -H newc | gzip -9 > initramfs.cpio.gz
  */
 #define SYS_mkdirat	34
 #define SYS_mount	40
@@ -69,12 +67,47 @@ static long str_len(const char *s)
 
 static void put(const char *path, const char *msg)
 {
-	long fd;
+	long fd = sys(SYS_openat, AT_FDCWD, (long)path, O_WRONLY | O_CLOEXEC,
+		      0, 0, 0);
 
-	fd = sys(SYS_openat, AT_FDCWD, (long)path, O_WRONLY | O_CLOEXEC, 0, 0, 0);
 	if (fd < 0)
 		return;
 	(void)sys(SYS_write, fd, (long)msg, str_len(msg), 0, 0, 0);
+	(void)sys(SYS_close, fd, 0, 0, 0, 0, 0);
+}
+
+/* Fill the DRM fbdev (simpledrm) with solid red; 720x1612x4 = 4.6 MiB. */
+static void paint_fb(void)
+{
+	static const char *paths[2] = { "/dev/fb0", "/dev/graphics/fb0" };
+	static unsigned int px[1024];
+	long fd = -1;
+	int i;
+
+	for (i = 0; i < 1024; i++)
+		px[i] = 0x00ff0000;	/* XRGB8888 red */
+
+	for (i = 0; i < 2 && fd < 0; i++)
+		fd = sys(SYS_openat, AT_FDCWD, (long)paths[i],
+			 O_WRONLY | O_CLOEXEC, 0, 0, 0);
+	if (fd < 0)
+		return;
+
+	for (i = 0; i < 1600; i++)
+		(void)sys(SYS_write, fd, (long)px, sizeof(px), 0, 0, 0);
+	(void)sys(SYS_close, fd, 0, 0, 0, 0, 0);
+}
+
+/* misc: bootloader_message.command = "bootonce-bootloader", p3 on this board. */
+static void arm_fastboot(void)
+{
+	static const char cmd[32] = "bootonce-bootloader";
+	long fd = sys(SYS_openat, AT_FDCWD, (long)"/dev/mmcblk0p3",
+		      O_WRONLY | O_CLOEXEC, 0, 0, 0);
+
+	if (fd < 0)
+		return;
+	(void)sys(SYS_write, fd, (long)cmd, sizeof(cmd), 0, 0, 0);
 	(void)sys(SYS_close, fd, 0, 0, 0, 0, 0);
 }
 
@@ -102,11 +135,13 @@ void _start(void)
 	put("/dev/kmsg", "<0>X6525-DEBUG: init reached, kernel is alive\n");
 	put("/dev/pmsg0", "X6525-DEBUG: init reached, kernel is alive\n");
 
-	/* Leave the message on the panel long enough to be photographed. */
-	(void)sys(SYS_sync, 0, 0, 0, 0, 0, 0);
-	sleep_sec(8);
+	paint_fb();
+	arm_fastboot();
 
-	put("/dev/kmsg", "<0>X6525-DEBUG: rebooting\n");
+	(void)sys(SYS_sync, 0, 0, 0, 0, 0, 0);
+	sleep_sec(10);
+
+	put("/dev/kmsg", "<0>X6525-DEBUG: rebooting to fastboot\n");
 	(void)sys(SYS_sync, 0, 0, 0, 0, 0, 0);
 	(void)sys(SYS_reboot, REBOOT_MAGIC1, REBOOT_MAGIC2, RB_AUTOBOOT, 0, 0, 0);
 	for (;;)
