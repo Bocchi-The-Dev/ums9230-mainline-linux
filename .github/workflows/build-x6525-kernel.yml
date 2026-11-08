@@ -77,7 +77,14 @@ jobs:
           CONFIG_MMC_SDHCI_SPRD=y
           CONFIG_DRM_SPRD=y
           CONFIG_SERIAL_SPRD=y
-          CONFIG_USB_MUSB_SPRD=y"
+          CONFIG_USB_MUSB_SPRD=y
+          CONFIG_DRM_SIMPLEDRM=y
+          CONFIG_DRM_FBDEV_EMULATION=y
+          CONFIG_FRAMEBUFFER_CONSOLE=y
+          CONFIG_FB_CORE=y
+          CONFIG_VT=y
+          CONFIG_VT_CONSOLE=y
+          CONFIG_DEVTMPFS_MOUNT=y"
           while IFS= read -r want; do
             [ -n "$want" ] || continue
             if grep -qxF -- "$want" out/.config; then
@@ -132,8 +139,10 @@ jobs:
       - name: Build debug initramfs (no-UART marker)
         run: |
           set -euo pipefail
-          aarch64-linux-gnu-gcc -static -Os -Wall -Wextra \
+          aarch64-linux-gnu-gcc -nostdlib -ffreestanding -fno-builtin -no-pie \
+            -static -Os -Wall -Wextra \
             -o artifacts/initramfs-init tools/x6525-debug-init/init.c
+          file artifacts/initramfs-init
           chmod 755 artifacts/initramfs-init
           rm -rf artifacts/initramfs-root
           mkdir -p artifacts/initramfs-root/dev artifacts/initramfs-root/proc artifacts/initramfs-root/sys
