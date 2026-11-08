@@ -300,7 +300,7 @@ __sipc_sbuf_create_ept(struct sipc_sbuf *sbuf, struct rpmsg_device *rpdev,
 	unsigned long flags;
 	int id;
 
-	if (rpdev && rpdev != &sbuf->ctrldev) {
+	if (rpdev && rpdev != sbuf->ctrldev) {
 		sdev = rpdev_to_sbuf_device(rpdev);
 	} else {
 		rcu_read_lock();
