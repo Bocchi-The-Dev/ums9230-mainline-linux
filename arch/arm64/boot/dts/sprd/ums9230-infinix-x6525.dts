@@ -44,6 +44,16 @@
 	model = "Infinix X6525";
 	compatible = "infinix,x6525", "sprd,ums9230";
 
+	/*
+	 * The stock LK/U-Boot matches the base DTB taken from vendor_boot
+	 * against its own board id before handing off to the kernel, and
+	 * aborts with "Find kernel dtb prop name sprd,sc-id= ... No matching
+	 * DTB could be found / load dt error!" when the property is missing.
+	 * This is the value LK reports for this unit; the vendor dtbo entry
+	 * for the X6525 carries the same string.
+	 */
+	sprd,sc-id = "ums9230 X6525";
+
 	aliases {
 		serial0 = &uart0;
 		serial1 = &uart1;		/* ttyS1 [T: console=ttyS1,115200n8] */
